@@ -14,7 +14,5 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Data (большие файлы лучше не пушить, только архив)
-data/*.html
-yandex_ml_handbook_test/
+data
 
