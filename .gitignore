@@ -1,18 +1,52 @@
 # Python
 __pycache__/
 *.py[cod]
-.ipynb_checkpoints/
-venv/
-.venv/
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
 .env/
+venv/
+env/
+ENV/
+
+# Environment variables (секреты)
+.env.vars
 
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Logs
+*.log
+api.log
+bot.log
+
+# Database
+qdrant_db/
+*.db
+*.sqlite
+
+# Data
+data.zip
+data/*.html
 
 # OS
 .DS_Store
 Thumbs.db
 
-data
+# Temporary
+tmp/
+temp/
+*.tmp
