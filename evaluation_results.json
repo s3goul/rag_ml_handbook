@@ -1,0 +1,46 @@
+{
+  "rag_evaluation_results": [
+    {
+      "query": "Что такое кросс-валидация?",
+      "fragment_relevance": "5/5",
+      "answer_quality": "5/5",
+      "overall_score": "5.0/5"
+    },
+    {
+      "query": "Как работает логистическая регрессия?",
+      "fragment_relevance": "4/5",
+      "answer_quality": "5/5",
+      "overall_score": "4.6/5"
+    },
+    {
+      "query": "Что такое градиентный спуск?",
+      "fragment_relevance": "5/5",
+      "answer_quality": "5/5",
+      "overall_score": "5.0/5"
+    },
+    {
+      "query": "Что такое L2 регуляризация?",
+      "fragment_relevance": "5/5",
+      "answer_quality": "5/5",
+      "overall_score": "5.0/5"
+    },
+    {
+      "query": "Объясни принцип работы случайного леса",
+      "fragment_relevance": "4/5",
+      "answer_quality": "5/5",
+      "overall_score": "4.6/5"
+    },
+    {
+      "query": "Как работает алгоритм k-means?",
+      "fragment_relevance": "5/5",
+      "answer_quality": "5/5",
+      "overall_score": "5.0/5"
+    }
+  ],
+  "summary": {
+    "total_queries": 6,
+    "average_fragment_relevance": 4.8,
+    "average_answer_quality": 5.0,
+    "average_overall_score": 4.87
+  }
+}

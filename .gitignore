@@ -20,6 +20,7 @@ ENV/
 =======
 env_rag/
 >>>>>>> 8b183a7b1c40e88ef55731ac09b77b5ddf3b7bd4
+qdrant_storage_new/
 
 # IDE
 .vscode/
@@ -54,3 +55,7 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+
+data
+.env
+agent_rag.py
