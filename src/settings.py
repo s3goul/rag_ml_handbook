@@ -20,5 +20,10 @@ class Settings(BaseSettings):
     embedder_name: str = Field(default="BAAI/bge-m3", alias="EMBEDDER_NAME")
     huggingfacehub_api_token: Optional[str] = Field(default=None, alias="HUGGINGFACEHUB_API_TOKEN")
 
+    # LangSmith настройки
+    langsmith_api_key: Optional[str] = Field(..., alias="LANGSMITH_API_KEY")
+    langsmith_project: str = Field(..., alias="LANGSMITH_PROJECT")
+    langsmith_tracing: str = Field(default="true", alias="LANGSMITH_TRACING")
+
 
 settings = Settings()

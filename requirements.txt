@@ -5,6 +5,7 @@ langchain-community>=0.0.20
 langchain-qdrant>=0.1.0
 langchain-openai>=0.1.0
 langgraph>=0.1.0
+langsmith>=0.1.0
 qdrant-client>=1.7.0
 
 # FastAPI и веб-сервер

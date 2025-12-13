@@ -1,6 +1,7 @@
 """
 Модуль для инициализации и работы с RAG системой
 """
+
 import os
 import yaml
 import httpx
@@ -13,38 +14,31 @@ from langchain.agents import create_agent
 from langchain.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain_openai import ChatOpenAI
+from langsmith import traceable
 from .settings import settings
 
 
 class AgenticRAGSystem:
     """Класс для управления RAG системой"""
-    
-    def __init__(
-        self,
-        qdrant_path: str = "./qdrant_db",
-        collection_name: str = "RAG_ML_HANDBOOK"
-    ):
+
+    def __init__(self, qdrant_path: str = "./qdrant_db", collection_name: str = "RAG_ML_HANDBOOK"):
         """
         Инициализация RAG системы
-        
+
         Args:
             qdrant_path: Путь к базе данных Qdrant
             collection_name: Имя коллекции в Qdrant
         """
-        # Валидация настроек через Pydantic (произойдет автоматически при импорте)
 
         # Инициализация Embedder
         self.embedder = HuggingFaceEmbeddings(
             model_name=settings.embedder_name,
-            model_kwargs={'device': 'cpu'},
-            encode_kwargs={'normalize_embeddings': True}
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
         )
 
         # Инициализация PROXY
-        http_client = httpx.Client(
-            proxy=settings.proxy_url,
-            verify=False
-        )
+        http_client = httpx.Client(proxy=settings.proxy_url, verify=False)
 
         # Инициализация LLM клиента
         self.llm = ChatOpenAI(
@@ -53,20 +47,20 @@ class AgenticRAGSystem:
             base_url="https://api.groq.com/openai/v1",
             http_client=http_client,
             temperature=0.0,
-            max_tokens=4096
+            max_tokens=4096,
         )
-        
+
         # Инициализация Qdrant
         self.client = QdrantClient(path=qdrant_path)
         self.collection_name = collection_name
-        
+
         # Создание векторного хранилища
         self.vector_store = QdrantVectorStore(
             client=self.client,
             collection_name=collection_name,
             embedding=self.embedder,
         )
-        
+
         # Загрузка промпта
         self.system_prompt = self._load_prompt()
         self.summary_prompt = self._load_summary_prompt()
@@ -75,7 +69,7 @@ class AgenticRAGSystem:
 
         # Создание инструмента для поиска
         self.retrieve_tool = self._create_retrieve_tool()
-        
+
         # Создание агента
         self.checkpointer = InMemorySaver()
         self.agent = self._create_agent()
@@ -92,17 +86,17 @@ class AgenticRAGSystem:
         if not text:
             return 0
         return max(1, len(text) // 2)
-    
+
     def _load_prompt(self) -> str:
         """Загрузка промпта из prompts.yaml"""
         prompts_path = os.path.join(os.path.dirname(__file__), "prompts.yaml")
         with open(prompts_path, "r", encoding="utf-8") as f:
             prompts = yaml.safe_load(f)
-        
+
         ReActPrompt = prompts.get("ReActPrompt", "")
         if not ReActPrompt:
             raise ValueError("Промпт не загрузился!")
-        
+
         return ReActPrompt
 
     def _load_summary_prompt(self) -> str:
@@ -115,36 +109,35 @@ class AgenticRAGSystem:
         if not summary_prompt:
             raise ValueError("Промпт суммаризации не загрузился!")
         return summary_prompt
+
     def _create_retrieve_tool(self):
         """Создание инструмента для поиска в векторной базе"""
         vector_store = self.vector_store  # Сохраняем ссылку для замыкания
-        
+
         @tool(response_format="content")
+        @traceable
         def retrieve_context(query: str) -> str:
             """Используй этот инструмент для поиска информации в учебнике по машинному обучению.
-            
+
             Args:
                 query: Поисковый запрос на русском или английском языке
-                
+
             Returns:
                 Найденные релевантные фрагменты из учебника
             """
             retrieved_docs = vector_store.similarity_search(query, k=5)
-            serialized = "\n\n".join(
-                (f"Content: {doc.page_content}")
-                for doc in retrieved_docs
-            )
+            serialized = "\n\n".join((f"Content: {doc.page_content}") for doc in retrieved_docs)
             return serialized
-        
+
         return retrieve_context
-    
+
     def _create_agent(self):
         """Создание агента с инструментами"""
         agent = create_agent(
             model=self.llm,
             tools=[self.retrieve_tool],
             system_prompt=self.system_prompt,
-            checkpointer=self.checkpointer
+            checkpointer=self.checkpointer,
         )
         return agent
 
@@ -195,7 +188,7 @@ class AgenticRAGSystem:
         self,
         messages: List[Tuple[str, str]],
         state: Dict[str, object],
-        user_id: str
+        user_id: str,
     ) -> Tuple[List[Tuple[str, str]], Dict[str, object]]:
         """
         Контролирует размер контекста перед вызовом LLM.
@@ -203,6 +196,7 @@ class AgenticRAGSystem:
           - Если длина > max_context_len_tokens, summary жёстко укорачивается.
           - Вопрос при необходимости также укорачивается.
         """
+
         def total_tokens(msgs: List[Tuple[str, str]]) -> int:
             return sum(self._approx_tokens(m[1]) for m in msgs)
 
@@ -236,23 +230,19 @@ class AgenticRAGSystem:
 
         messages: List[Tuple[str, str]] = []
         if summary:
-            messages.append(
-                (
-                    "system",
-                    f"Краткое резюме диалога пользователя: {summary}"
-                )
-            )
+            messages.append(("system", f"Краткое резюме диалога пользователя: {summary}"))
         messages.append(("user", question))
         return messages, state
-    
+
+    @traceable
     def query(self, question: str, user_id: str = "default") -> str:
         """
         Обработка запроса пользователя
-        
+
         Args:
             question: Вопрос пользователя
             user_id: ID пользователя для сохранения контекста
-            
+
         Returns:
             Ответ агента
         """
@@ -276,14 +266,10 @@ class AgenticRAGSystem:
             messages, state = self._shrink_messages_if_needed(messages, state, user_id)
 
             # Вызываем агента
-            result = self.agent.invoke(
-                {"messages": messages},
-                config=config
-            )
+            result = self.agent.invoke({"messages": messages}, config=config)
 
             # Извлекаем ответ из последнего сообщения
             if result and "messages" in result:
-
                 # Последнее сообщение от ассистента
                 llm_message = result["messages"][-1]
                 if hasattr(llm_message, "content"):
@@ -301,7 +287,7 @@ class AgenticRAGSystem:
                 return answer
 
             return "Извините, не удалось получить ответ."
-            
+
         except Exception as e:
             msg = str(e)
             # Обработка превышения лимита токенов/TPM (413 / rate_limit_exceeded)

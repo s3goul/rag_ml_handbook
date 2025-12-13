@@ -10,6 +10,7 @@
 - [Быстрый старт](#-быстрый-старт)
 - [Структура проекта](#-структура-проекта)
 - [Технологический стек](#-технологический-стек)
+- [LangSmith трейсинг](#-langsmith-трейсинг)
 - [Оценка качества](#-оценка-качества)
 
 ---
@@ -222,6 +223,11 @@ EMBEDDER_NAME=BAAI/bge-m3
 
 # URL API сервера
 API_URL=http://localhost:8000
+
+# LangSmith трейсинг (опционально)
+LANGSMITH_API_KEY=your_langsmith_api_key
+LANGSMITH_PROJECT=rag-ml-handbook
+LANGSMITH_TRACING=true
 ```
 
 ### Шаг 4: Проверка структуры
@@ -322,6 +328,7 @@ rag_ml_handbook/
 ### Backend & Core
 - **LangChain** - фреймворк для RAG и агентов
 - **LangGraph** - оркестрация агентов с checkpointing
+- **LangSmith** - трейсинг и мониторинг выполнения
 - **FastAPI** - современный веб-фреймворк
 - **Uvicorn** - ASGI сервер
 
@@ -338,6 +345,40 @@ rag_ml_handbook/
 - **Selenium** - веб-скрапинг с JavaScript рендерингом
 - **BeautifulSoup** - парсинг HTML
 - **Trafilatura** - извлечение текста
+
+---
+
+## 🔍 LangSmith трейсинг
+
+Система поддерживает интеграцию с **LangSmith** для детального отслеживания выполнения RAG системы и агентов.
+
+### Что отслеживается
+
+- 🔍 **Поисковые запросы** в векторной базе (`retrieve_context`)
+- 💬 **Полные диалоги** пользователей (`query` method)
+- ⚙️ **Работа агента** и использование инструментов
+- 📊 **Цепочка вызовов**: query → agent → retrieve_context
+
+### Быстрая настройка
+
+1. **Добавьте в `.env` файл:**
+```env
+# LangSmith трейсинг
+LANGSMITH_API_KEY=your_langsmith_api_key
+LANGSMITH_PROJECT=rag-ml-handbook
+LANGSMITH_TRACING=true
+```
+
+2. **Установите зависимость** (уже включена в requirements.txt):
+```bash
+pip install langsmith>=0.1.0
+```
+
+3. **Запустите систему как обычно** - трейсинг активируется автоматически
+
+### Просмотр трейсов
+
+Откройте [LangSmith](https://smith.langchain.com) и найдите ваш проект для просмотра детальных трейсов выполнения.
 
 ---
 
