@@ -13,6 +13,7 @@ from langchain.agents import create_agent
 from langchain.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain_openai import ChatOpenAI
+from .settings import settings
 
 
 class AgenticRAGSystem:
@@ -30,40 +31,29 @@ class AgenticRAGSystem:
             qdrant_path: Путь к базе данных Qdrant
             collection_name: Имя коллекции в Qdrant
         """
-        # Проверка переменных окружения
-        required_vars = {
-            "HUGGINGFACEHUB_API_TOKEN": "Hugging Face API токен",
-            "GROQ_API_TOKEN": "GROQ API токен",
-            "PROXY_URL": "URL прокси",
-            "MODEL_NAME": "Имя модели",
-            "EMBEDDER_NAME": "Имя embedder модели"
-        }
-        
-        for var_name, description in required_vars.items():
-            if not os.getenv(var_name):
-                raise ValueError(f"{var_name} ({description}) должен быть установлен в переменных окружения")
+        # Валидация настроек через Pydantic (произойдет автоматически при импорте)
 
         # Инициализация Embedder
         self.embedder = HuggingFaceEmbeddings(
-            model_name=os.getenv("EMBEDDER_NAME"),
+            model_name=settings.embedder_name,
             model_kwargs={'device': 'cpu'},
             encode_kwargs={'normalize_embeddings': True}
         )
-        
+
         # Инициализация PROXY
         http_client = httpx.Client(
-            proxy=os.getenv("PROXY_URL"),
+            proxy=settings.proxy_url,
             verify=False
         )
 
         # Инициализация LLM клиента
         self.llm = ChatOpenAI(
-            model=os.getenv("MODEL_NAME"),
-            api_key=os.environ["GROQ_API_TOKEN"],
+            model=settings.model_name,
+            api_key=settings.groq_api_token,
             base_url="https://api.groq.com/openai/v1",
             http_client=http_client,
-            temperature=0.3,
-            max_tokens=1024
+            temperature=0.0,
+            max_tokens=4096
         )
         
         # Инициализация Qdrant

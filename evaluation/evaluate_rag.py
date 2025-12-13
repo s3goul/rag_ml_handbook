@@ -1,124 +1,93 @@
-import yaml
-import os
-from dotenv import load_dotenv
-import httpx
-from langchain_openai import ChatOpenAI
-from qdrant_client import QdrantClient
-from langchain_qdrant import QdrantVectorStore
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.tools import tool
-from langchain.agents import create_agent
-from langgraph.checkpoint.memory import InMemorySaver
+import datetime
 import json
-from pydantic import BaseModel, Field
+import os
 from typing import Literal
 
+import httpx
+from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
+
+from src.rag_system import AgenticRAGSystem
+from src.settings import settings
+
 load_dotenv()
-os.environ["NO_PROXY"] = "localhost,127.0.0.1,example.com" #OPTIONAL
-GROQ_API_TOKEN = os.getenv("GROQ_API_TOKEN")
-PROXY_URL = os.getenv("PROXY_URL")
+os.environ["NO_PROXY"] = "localhost,127.0.0.1,example.com"
 
-with open("prompts.yaml", "r") as f:
-    prompts = yaml.safe_load(f)
-
-ReActSysPrompt = prompts["ReActPrompt"]
-
-embedder = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-m3",
-    encode_kwargs={"normalize_embeddings": True},
+rag_system = AgenticRAGSystem(
+    qdrant_path="./qdrant_db",
+    collection_name="RAG_ML_HANDBOOK",
 )
 
-COLLECTION_NAME = "RAG_ML_HANDBOOK"
-
-client = QdrantClient(url="localhost", port=6338)
-vector_store = QdrantVectorStore(
-    client=client,
-    collection_name=COLLECTION_NAME,
-    embedding=embedder,
-)
-
-
-http_client = httpx.Client(proxy=PROXY_URL, verify=False)
-
-llm = ChatOpenAI(
+http_client = httpx.Client(proxy=settings.proxy_url, verify=False)
+eval_llm = ChatOpenAI(
     model="openai/gpt-oss-120b",
-    api_key=os.environ["GROQ_API_TOKEN"],
+    api_key=settings.groq_api_token,
     base_url="https://api.groq.com/openai/v1",
     http_client=http_client,
     temperature=0.0,
-    max_tokens=2048,
+    max_tokens=4096,
 )
 
 
 class RelevanceEvaluation(BaseModel):
-    """Schema for relevance evaluation"""
+    """Schema for LLM-based relevance evaluation."""
 
     score: Literal[1, 2, 3, 4, 5] = Field(description="Score from 1 to 5")
     explanation: str = Field(description="Brief explanation of the score")
 
 
-@tool(response_format="content")
-def retrieve_context(query: str):
-    """Retrieve information to help answer a query."""
-    retrieved_docs = vector_store.similarity_search(query, k=5)
-    serialized = "\n\n".join((f"Content: {doc.page_content}") for doc in retrieved_docs)
-    return serialized
+def evaluate_single_query(query: str, category: str = "basic") -> dict:
+    """Evaluate a single query using LLM as judge."""
 
+    user_id = f"eval_{hash(query)}"
+    answer = rag_system.query(query, user_id=user_id)
 
-def evaluate_single_query(query: str):
-    """Evaluate a single query using LLM as judge"""
+    structured_llm = eval_llm.with_structured_output(RelevanceEvaluation)
 
-    # Step 1: Get retrieved chunks
-    retrieved_docs = vector_store.similarity_search(query, k=5)
-    chunks = [doc.page_content for doc in retrieved_docs]
+    category_specific_criteria = {
+        "trick_questions": """
+ОСОБЫЕ КРИТЕРИИ ДЛЯ ВОПРОСОВ С ПОДВОХАМИ:
+- Правильно ли модель выявила некорректность или ложность утверждения?
+- Объяснила ли она, почему утверждение неверно?
+- Предоставила ли альтернативы или правильную информацию?
+- Избежала ли галлюцинаций и подтверждения неверных предпосылок?
+        """,
+        "non_existent": """
+ОСОБЫЕ КРИТЕРИИ ДЛЯ НЕСУЩЕСТВУЮЩИХ КОНЦЕПЦИЙ:
+- Правильно ли модель определила, что концепция не существует?
+- Объяснила ли она, что такого алгоритма/метода нет?
+- Предложила ли похожие реальные алгоритмы?
+- Избежала ли изобретения несуществующих объяснений?
+        """,
+        "advanced": """
+КРИТЕРИИ ДЛЯ ПРОДВИНУТЫХ ВОПРОСОВ:
+- Демонстрирует ли ответ глубокое понимание темы?
+- Рассматривает ли различные аспекты и нюансы?
+- Приводит ли примеры применения?
+- Объясняет ли ограничения и компромиссы?
+        """,
+        "comparative": """
+КРИТЕРИИ ДЛЯ СРАВНИТЕЛЬНЫХ ВОПРОСОВ:
+- Проводится ли честное сравнение с учетом плюсов и минусов?
+- Указываются ли условия применимости каждого метода?
+- Приводятся ли конкретные примеры использования?
+        """,
+    }
 
-    # Step 2: Get agent response
-    checkpointer = InMemorySaver()
-    config = {"configurable": {"thread_id": f"eval_{hash(query)}"}}
+    special_criteria = category_specific_criteria.get(category, "")
 
-    agent = create_agent(model=llm, tools=[retrieve_context], system_prompt=ReActSysPrompt, checkpointer=checkpointer)
-
-    agent_output = agent.invoke(
-        {
-            "messages": [{"role": "user", "content": query}],
-            "config": config,
-        },
-        config=config,
-    )
-
-    answer = agent_output["messages"][-1].content
-
-    # Step 3: Evaluate chunks relevance using structured output
-    chunks_text = "\n\n".join([f"Chunk {i + 1}: {chunk[:300]}..." for i, chunk in enumerate(chunks)])
-
-    # Create structured LLM for evaluation
-    structured_llm = llm.with_structured_output(RelevanceEvaluation)
-
-    chunk_eval_prompt = f"""
-Оцени релевантность найденных фрагментов для запроса.
-
-ЗАПРОС: {query}
-
-ФРАГМЕНТЫ:
-{chunks_text}
-
-Критерии оценки (1-5):
-1 - совершенно нерелевантны
-2 - слабо связаны с запросом
-3 - частично релевантны
-4 - в основном релевантны
-5 - полностью релевантны и достаточны для ответа
-"""
-
-    # Step 4: Evaluate answer relevance
     answer_eval_prompt = f"""
 Оцени качество ответа на запрос пользователя.
+Категория вопроса: {category}
 
 ЗАПРОС: {query}
 
 ОТВЕТ: {answer}
 
-Критерии оценки (1-5):
+{special_criteria}
+
+Общие критерии оценки (1-5):
 1 - не отвечает на вопрос
 2 - частично отвечает, много неточностей
 3 - отвечает, но неполно или с ошибками
@@ -127,67 +96,155 @@ def evaluate_single_query(query: str):
 """
 
     try:
-        # Evaluate chunks
-        chunk_eval: RelevanceEvaluation = structured_llm.invoke(chunk_eval_prompt)
-
-        # Evaluate answer
         answer_eval: RelevanceEvaluation = structured_llm.invoke(answer_eval_prompt)
 
         return {
             "query": query,
-            "chunks": chunks,
+            "category": category,
             "answer": answer,
-            "chunk_score": chunk_eval.score,
-            "chunk_explanation": chunk_eval.explanation,
             "answer_score": answer_eval.score,
             "answer_explanation": answer_eval.explanation,
-            "overall_score": (chunk_eval.score * 0.4 + answer_eval.score * 0.6),
+            "overall_score": answer_eval.score,
         }
 
     except Exception as e:
-        return {"query": query, "error": str(e), "chunk_score": 0, "answer_score": 0, "overall_score": 0}
+        return {"query": query, "category": category, "error": str(e), "answer_score": 0, "overall_score": 0}
 
 
-# Test queries
-test_queries = [
-    "Что такое L2 регуляризация?",
-    "Объясни принцип работы случайного леса",
-    "Как работает алгоритм k-means?",
-    "Что такое градиентный спуск?",
-    "Что такое кросс-валидация?",
-    "Как работает логистическая регрессия?",
-]
+test_queries_categories = {
+    "basic": [
+        "Что такое L2 регуляризация?",
+        "Объясни принцип работы случайного леса",
+        "Как работает алгоритм k-means?",
+        "Что такое градиентный спуск?",
+        "Что такое кросс-валидация?",
+        "Как работает логистическая регрессия?",
+    ],
+    "advanced": [
+        "Сравни эффективность L1 и L2 регуляризации при наличии мультиколлинеарности в данных",
+        "Когда использовать Random Forest вместо Gradient Boosting и почему?",
+        "Как выбрать оптимальное количество кластеров в k-means для высокомерных данных?",
+        # "Объясни различия между SGD, Adam и RMSprop оптимизаторами",
+        "Как стратифицированная кросс-валидация влияет на оценку моделей с несбалансированными классами?",
+        "В каких случаях логистическая регрессия может переобучаться и как это предотвратить?",
+    ],
+    "comparative": [
+        "В чем принципиальное различие между случайным лесом и градиентным бустингом?",
+        "Когда лучше использовать SVM вместо нейронных сетей?",
+        "Сравни DBSCAN и k-means для кластеризации аномальных данных",
+        # "Что лучше для текстовой классификации: TF-IDF + SVM или BERT?",
+        # "Сравни эффективность ансамблей и одиночных моделей",
+    ],
+    "contextual": [
+        # "Как применить машинное обучение для прогнозирования оттока клиентов в банке?",
+        "Какие алгоритмы лучше всего подходят для рекомендательных систем e-commerce?",
+        "Как построить систему детекции мошенничества в реальном времени?",
+        "Какие методы использовать для анализа настроений в социальных сетях?",
+        # "Как создать систему компьютерного зрения для медицинской диагностики?",
+    ],
+    "trick_questions": [
+        "Почему нейронные сети всегда лучше линейных моделей?",
+        # "Правда ли, что больше данных всегда означает лучшую модель?",
+        # "Можно ли использовать точность (accuracy) как единственную метрику для всех задач?",
+        "Всегда ли более сложная модель дает лучшие результаты?",
+        # "Правда ли, что deep learning решает все проблемы машинного обучения?",
+        "Можно ли применить k-means для кластеризации текстовых данных напрямую?",
+        "Правда ли, что корреляция всегда означает причинно-следственную связь?",
+    ],
+    "edge_cases": [
+        "Как работает машинное обучение при малом количестве данных (few-shot learning)?",
+        "Что делать, если в данных 99% одного класса и 1% другого?",
+        # "Как обучить модель, если данные постоянно изменяются (concept drift)?",
+        "Можно ли применить машинное обучение к задачам, где нет исторических данных?",
+        # "Как интерпретировать результаты черного ящика модели для медицинской диагностики?",
+    ],
+    "non_existent": [
+        "Что такое алгоритм квантового k-means?",
+        # "Как работает нейронная сеть Шредингера?",
+        "Объясни принцип работы голографической регрессии",
+        "Что такое эмоциональная кластеризация данных?",
+        "Как применить алгоритм временной дефрагментации к машинному обучению?",
+    ],
+}
 
-if __name__ == "__main__":
-    print("Запуск оценки RAG системы...")
+
+# Utility functions
+def get_all_test_queries() -> list:
+    test_queries = []
+    for category, queries in test_queries_categories.items():
+        for query in queries:
+            test_queries.append({"query": query, "category": category})
+    return test_queries
+
+
+def run_full_evaluation() -> None:
+    test_queries = get_all_test_queries()
+    print(f"Оценка {len(test_queries)} вопросов из {len(test_queries_categories)} категорий...")
 
     results = []
-    for i, query in enumerate(test_queries):
-        print(f"\nОценка запроса {i + 1}/{len(test_queries)}: {query}")
-        result = evaluate_single_query(query)
+    for i, query_data in enumerate(test_queries, 1):
+        query_text = query_data["query"]
+        category = query_data["category"]
+
+        if i % 5 == 1 or i == len(test_queries):
+            print(f"\rПрогресс: {i}/{len(test_queries)}", end="", flush=True)
+
+        result = evaluate_single_query(query_text, category)
         results.append(result)
 
-        if "error" not in result:
-            print(f"Релевантность фрагментов: {result['chunk_score']}/5")
-            print(f"Качество ответа: {result['answer_score']}/5")
-            print(f"Общая оценка: {result['overall_score']:.1f}/5")
-        else:
-            print(f"Ошибка: {result}")
+    _print_evaluation_summary(results)
+    _save_results(results)
 
+
+def _print_evaluation_summary(results):
     valid_results = [r for r in results if "error" not in r]
-    if valid_results:
-        avg_chunk = sum(r["chunk_score"] for r in valid_results) / len(valid_results)
-        avg_answer = sum(r["answer_score"] for r in valid_results) / len(valid_results)
-        avg_overall = sum(r["overall_score"] for r in valid_results) / len(valid_results)
+    if not valid_results:
+        print("Нет валидных результатов для анализа")
+        return
 
-        print(f"\n{'=' * 50}")
-        print("ИТОГОВЫЕ РЕЗУЛЬТАТЫ")
-        print(f"{'=' * 50}")
-        print(f"Успешно оценено запросов: {len(valid_results)}/{len(test_queries)}")
-        print(f"Средняя релевантность фрагментов: {avg_chunk:.2f}/5")
-        print(f"Среднее качество ответов: {avg_answer:.2f}/5")
-        print(f"Общая средняя оценка: {avg_overall:.2f}/5")
+    avg_answer = sum(r["answer_score"] for r in valid_results) / len(valid_results)
+    avg_overall = sum(r["overall_score"] for r in valid_results) / len(valid_results)
 
-        with open("evaluation_results.json", "w", encoding="utf-8") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
-        print("\nРезультаты сохранены в evaluation_results.json")
+    print(f"\n{'=' * 60}")
+    print("ИТОГОВЫЕ РЕЗУЛЬТАТЫ")
+    print(f"{'=' * 60}")
+    print(f"Успешно оценено запросов: {len(valid_results)}/{len(results)}")
+    print(f"Среднее качество ответов: {avg_answer:.2f}/5")
+    print(f"Общая средняя оценка: {avg_overall:.2f}/5")
+
+
+def _save_results(results):
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"evaluation_results_{timestamp}.json"
+
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+    print(f"\nРезультаты сохранены в {filename}")
+
+
+def evaluate_category(category_name: str) -> list:
+    if category_name not in test_queries_categories:
+        print(f"Категория '{category_name}' не найдена. Доступные: {list(test_queries_categories.keys())}")
+        return
+
+    queries = test_queries_categories[category_name]
+    print(f"Оценка категории '{category_name}': {len(queries)} вопросов")
+
+    results = []
+    for i, query in enumerate(queries, 1):
+        print(f"\rПрогресс: {i}/{len(queries)}", end="", flush=True)
+        result = evaluate_single_query(query, category_name)
+        results.append(result)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"evaluation_{category_name}_{timestamp}.json"
+
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+    print(f"Результаты сохранены в {filename}")
+
+    return results
+
+
+if __name__ == "__main__":
+    evaluate_category("non_existent")
+    # run_full_evaluation()

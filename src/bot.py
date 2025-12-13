@@ -1,11 +1,11 @@
 """
 Телеграм бот для взаимодействия с RAG системой
 """
-import os
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import httpx
+from .settings import settings
 
 # Настройка логирования
 logging.basicConfig(
@@ -15,13 +15,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Константы
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-API_URL = os.getenv("API_URL", "http://localhost:8000")
-API_QUERY_ENDPOINT = f"{API_URL}/query"
-
-# Проверка наличия токена
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN должен быть установлен в переменных окружения")
+API_QUERY_ENDPOINT = f"{settings.api_url}/query"
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -116,7 +110,7 @@ def main():
     logger.info("Запуск телеграм бота...")
     
     # Создаем приложение
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    application = Application.builder().token(settings.telegram_bot_token).build()
     
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
