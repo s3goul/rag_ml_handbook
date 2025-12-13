@@ -10,16 +10,12 @@ build/
 
 # Virtual Environment
 .env/
-<<<<<<< HEAD
 venv/
 env/
 ENV/
 
 # Environment variables (секреты)
 .env.vars
-=======
-env_rag/
->>>>>>> 8b183a7b1c40e88ef55731ac09b77b5ddf3b7bd4
 qdrant_storage_new/
 
 # IDE
@@ -45,7 +41,6 @@ qdrant_db/
 
 # Data
 data.zip
-data/*.html
 
 # OS
 .DS_Store

@@ -122,5 +122,5 @@ class HandbookScraper:
 
 
 if __name__ == "__main__":
-    scraper = HandbookScraper(output_dir="data_new")
+    scraper = HandbookScraper(output_dir="data")
     scraper.run()
