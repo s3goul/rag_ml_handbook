@@ -157,10 +157,10 @@ POST /query
 - Сохранение маппинга URL ↔ файл
 
 ### 5️⃣ **Evaluation** (`evaluation/evaluate_rag.py`)
-Автоматическая оценка качества RAG системы:
-- **Chunk Relevance Score**: Релевантность найденных фрагментов (1-5)
-- **Answer Quality Score**: Качество финального ответа (1-5)
-- **Overall Score**: Взвешенная оценка (40% chunks + 60% answer)
+Автоматическая оценка качества RAG системы с использованием LLM-as-a-Judge подхода:
+- **Answer Quality Score**: Оценка качества финального ответа (1-5)
+- **Категоризированное тестирование**: 7 типов вопросов (базовые, продвинутые, сравнительные, с подвохом и др.)
+- **Детальная статистика**: Средняя оценка 4.83/5 на 29 тестовых запросах
 
 ---
 
@@ -343,7 +343,7 @@ rag_ml_handbook/
 
 ## 📊 Оценка качества
 
-Система автоматической оценки RAG (`evaluation/evaluate_rag.py`) использует **LLM-as-a-Judge** подход:
+Система автоматической оценки RAG (`evaluation/evaluate_rag.py`) использует **LLM-as-a-Judge** подход с моделью **openai/gpt-oss-120b** (GROQ API):
 
 ### Метрика
 
@@ -371,7 +371,7 @@ rag_ml_handbook/
 
 ```bash
 cd evaluation
-python evaluate_rag.py
+python -m evaluation.evaluate_rag
 ```
 
 Результаты сохраняются в `evaluation_results.json` с детализацией по каждому запросу.
