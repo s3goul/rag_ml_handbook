@@ -6,7 +6,7 @@ import os
 import yaml
 import httpx
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
@@ -16,6 +16,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langchain_openai import ChatOpenAI
 from langsmith import traceable
 from .settings import settings
+
+import tiktoken
+_ENC = tiktoken.get_encoding("cl100k_base")
+def _tok(text: str) -> int:
+    return len(_ENC.encode(text or ""))
 
 
 class AgenticRAGSystem:
@@ -61,11 +66,21 @@ class AgenticRAGSystem:
             embedding=self.embedder,
         )
 
-        # Загрузка промпта
-        self.system_prompt = self._load_prompt()
-        self.summary_prompt = self._load_summary_prompt()
-        # Жёсткий лимит на длину отправляемого контекста (токены, консервативная оценка)
-        self.max_context_len_tokens = 2200
+        # Единожды загружаем промпты
+        prompts_path = os.path.join(os.path.dirname(__file__), "prompts.yaml")
+        with open(prompts_path, "r", encoding="utf-8") as f:
+            self.prompts = yaml.safe_load(f) or {}
+        self.system_prompt = self.prompts.get("ReActPrompt", "")
+        if not self.system_prompt:
+            raise ValueError("Промпт не загрузился!")
+        self.summary_prompt = self.prompts.get("DialogSummaryPrompt", "")
+        if not self.summary_prompt:
+            raise ValueError("Промпт суммаризации не загрузился!")
+        # Жёсткий лимит на длину отправляемого контекста (токены)
+        self.max_context_len_tokens = 6000
+        self.max_summary_tokens = 1000
+        self.per_chunk_tokens = 700
+        self.total_retrieval_tokens = 3500
 
         # Создание инструмента для поиска
         self.retrieve_tool = self._create_retrieve_tool()
@@ -82,33 +97,29 @@ class AgenticRAGSystem:
         self.last_request_ts: Dict[str, float] = {}
 
     def _approx_tokens(self, text: str) -> int:
-        """Консервативная оценка количества токенов (≈2 символа на токен для RU/EN)."""
-        if not text:
-            return 0
-        return max(1, len(text) // 2)
+        """Подсчёт токенов (точно через tiktoken, иначе грубо)."""
+        return _tok(text)
 
-    def _load_prompt(self) -> str:
-        """Загрузка промпта из prompts.yaml"""
-        prompts_path = os.path.join(os.path.dirname(__file__), "prompts.yaml")
-        with open(prompts_path, "r", encoding="utf-8") as f:
-            prompts = yaml.safe_load(f)
-
-        ReActPrompt = prompts.get("ReActPrompt", "")
-        if not ReActPrompt:
-            raise ValueError("Промпт не загрузился!")
-
-        return ReActPrompt
-
-    def _load_summary_prompt(self) -> str:
-        """Загрузка промпта для суммаризации диалога"""
-        prompts_path = os.path.join(os.path.dirname(__file__), "prompts.yaml")
-        with open(prompts_path, "r", encoding="utf-8") as f:
-            prompts = yaml.safe_load(f)
-
-        summary_prompt = prompts.get("DialogSummaryPrompt", "")
-        if not summary_prompt:
-            raise ValueError("Промпт суммаризации не загрузился!")
-        return summary_prompt
+    def _trim_to_tokens(self, text: str, limit: int) -> str:
+        """Обрезает текст до указанного лимита токенов (по tiktoken/грубой оценке)."""
+        if self._approx_tokens(text) <= limit:
+            return text
+        # грубый binary-like trim по символам с запасом
+        low, high = 0, len(text)
+        target_chars = max(1, limit * 4)  # стартовая оценка
+        high = min(high, target_chars)
+        if high <= low:
+            return text[:max(1, target_chars)]
+        while low < high:
+            mid = (low + high) // 2
+            if self._approx_tokens(text[:mid]) > limit:
+                high = mid - 1
+            else:
+                low = mid + 1
+        trimmed = text[:high]
+        if self._approx_tokens(trimmed) > limit and len(trimmed) > 1:
+            trimmed = trimmed[:-1]
+        return trimmed
 
     def _create_retrieve_tool(self):
         """Создание инструмента для поиска в векторной базе"""
@@ -125,8 +136,26 @@ class AgenticRAGSystem:
             Returns:
                 Найденные релевантные фрагменты из учебника
             """
+            # Сбрасываем счётчик токенов ретривала
+            self.last_retrieve_tokens = 0
             retrieved_docs = vector_store.similarity_search(query, k=5)
-            serialized = "\n\n".join((f"Content: {doc.page_content}") for doc in retrieved_docs)
+            chunks: List[str] = []
+            total_limit = self.total_retrieval_tokens
+            per_chunk_limit = self.per_chunk_tokens
+            total_used = 0
+            for doc in retrieved_docs:
+                text = doc.page_content or ""
+                trimmed = self._trim_to_tokens(text, per_chunk_limit)
+                tks = self._approx_tokens(trimmed)
+                if total_used + tks > total_limit:
+                    # если даже текущий trimmed переполняет общий лимит — пропускаем
+                    break
+                total_used += tks
+                self.last_retrieve_tokens += tks
+                chunks.append(f"Content: {trimmed}")
+                if total_used >= total_limit:
+                    break
+            serialized = "\n\n".join(chunks)
             return serialized
 
         return retrieve_context
@@ -154,17 +183,17 @@ class AgenticRAGSystem:
     def _update_summary(self, state: Dict[str, object], question: str, answer: str) -> Dict[str, object]:
         """
         Обновляет накопительную summary, добавляя новый обмен вопрос-ответ.
-        Если summary перерастает лимит, она ужимается через LLM и жестко обрезается.
+        Если summary перерастает лимит, она ужимается и обрезается.
         """
         prev_summary: str = state.get("summary", "")
 
-        # Собираем текст для сжатия: прошлое summary + новая пара Q/A
-        parts = []
-        if prev_summary:
-            parts.append(f"Текущее резюме: {prev_summary}")
-        parts.append(f"user: {question}")
-        parts.append(f"assistant: {answer}")
-        to_summarize = "\n".join(parts)
+        # Делаем отдельную компактную свёртку только текущего шага (Q/A)
+        to_summarize = "\n".join(
+            [
+                f"user: {question}",
+                f"assistant: {answer}",
+            ]
+        )
 
         summary_message = self.llm.invoke(
             [
@@ -172,56 +201,18 @@ class AgenticRAGSystem:
                 ("user", to_summarize),
             ]
         )
-        new_summary = summary_message.content if hasattr(summary_message, "content") else prev_summary
+        step_summary = summary_message.content if hasattr(summary_message, "content") else ""
 
-        # Жесткое ограничение длины summary по токенам (консервативно)
-        max_summary_tokens = 1500
-        if self._approx_tokens(new_summary) > max_summary_tokens:
-            # Обрезаем по символам пропорционально, оставляя небольшой запас
-            max_chars = max_summary_tokens * 2
-            new_summary = new_summary[:max_chars]
+        # Ограничиваем свёртку шага до ~200 токенов
+        step_summary = self._trim_to_tokens(step_summary, 200)
 
-        state["summary"] = new_summary
+        # Конкатенируем к предыдущей summary и обрезаем по лимиту (старое выкидываем)
+        combined = "\n".join(s for s in [prev_summary, step_summary] if s)
+        if self._approx_tokens(combined) > self.max_summary_tokens:
+            combined = self._trim_to_tokens(combined, self.max_summary_tokens)
+
+        state["summary"] = combined
         return state
-
-    def _shrink_messages_if_needed(
-        self,
-        messages: List[Tuple[str, str]],
-        state: Dict[str, object],
-        user_id: str,
-    ) -> Tuple[List[Tuple[str, str]], Dict[str, object]]:
-        """
-        Контролирует размер контекста перед вызовом LLM.
-        Теперь в контексте только summary и текущий вопрос:
-          - Если длина > max_context_len_tokens, summary жёстко укорачивается.
-          - Вопрос при необходимости также укорачивается.
-        """
-
-        def total_tokens(msgs: List[Tuple[str, str]]) -> int:
-            return sum(self._approx_tokens(m[1]) for m in msgs)
-
-        if total_tokens(messages) <= self.max_context_len_tokens:
-            return messages, state
-
-        # Усечение summary и вопроса (консервативные лимиты)
-        max_summary_tokens = 1500
-        max_question_tokens = 400
-
-        summary = state.get("summary", "")
-        question_role, question_content = messages[-1]
-
-        if summary and self._approx_tokens(summary) > max_summary_tokens:
-            summary = summary[: max_summary_tokens * 2]  # грубо по символам
-
-        if self._approx_tokens(question_content) > max_question_tokens:
-            question_content = question_content[: max_question_tokens * 2]  # грубо по символам
-
-        rebuilt: List[Tuple[str, str]] = []
-        if summary:
-            rebuilt.append(("system", f"Краткое резюме диалога пользователя: {summary}"))
-        rebuilt.append((question_role, question_content))
-
-        return rebuilt, state
 
     def _build_messages(self, user_id: str, question: str) -> Tuple[List[Tuple[str, str]], Dict[str, object]]:
         """Формирует список сообщений для агента с учетом summary"""
@@ -235,7 +226,7 @@ class AgenticRAGSystem:
         return messages, state
 
     @traceable
-    def query(self, question: str, user_id: str = "default") -> str:
+    def query(self, question: str, user_id: str = "default") -> Dict[str, Any]:
         """
         Обработка запроса пользователя
 
@@ -247,23 +238,27 @@ class AgenticRAGSystem:
             Ответ агента
         """
         try:
-            # Простой анти-спам и TPM-защита: минимум 70 секунд между запросами пользователя
             now = time.time()
-            last_ts = self.last_request_ts.get(user_id)
-            if last_ts is not None:
-                delta = now - last_ts
-                cooldown = 70 - delta
-                if cooldown > 0:
-                    return f"Подождите {int(cooldown)} сек, чтобы не превысить лимиты модели."
-
-            # Создаем конфигурацию с user_id для сохранения истории
-            # Создаем конфигурацию с user_id для сохранения истории
-            config = {"configurable": {"thread_id": user_id}}
+            # Создаем конфигурацию: новый thread_id на каждый вызов,
+            # но прокидываем user_id для трейсинга/метаданных
+            thread_id = f"{user_id}_{int(time.time() * 1000)}"
+            config = {
+                "configurable": {"thread_id": thread_id},
+                "metadata": {"user_id": user_id},
+            }
 
             # Формируем сообщения с учетом summary
             messages, state = self._build_messages(user_id, question)
-            # Контроль длины контекста
-            messages, state = self._shrink_messages_if_needed(messages, state, user_id)
+            # Подсчёт токенов отдельных частей
+            system_tokens = self._approx_tokens(self.system_prompt)
+            summary_tokens = self._approx_tokens(state.get("summary", ""))
+            question_tokens = self._approx_tokens(question)
+
+            # Простой прогноз общего объёма (учитываем потолок ретривала)
+            estimated_total = system_tokens + summary_tokens + question_tokens + self.total_retrieval_tokens
+            if estimated_total > self.max_context_len_tokens:
+                self.last_request_ts[user_id] = now
+                return {"answer": "Запрос слишком длинный. Укоротите запрос и повторите."}
 
             # Вызываем агента
             result = self.agent.invoke({"messages": messages}, config=config)
@@ -275,34 +270,35 @@ class AgenticRAGSystem:
                 if hasattr(llm_message, "content"):
                     answer = llm_message.content
                 else:
-                    return "Извините, не удалось получить ответ."
+                    self.last_request_ts[user_id] = now
+                    return {"answer": "Извините, не удалось получить ответ."}
 
                 # Обновляем summary в состоянии пользователя
                 new_state = self._update_summary(state, question, answer)
                 self._save_state(user_id, new_state)
-
-                # Обновляем время последнего запроса (даже при успехе)
+                # Фиксируем время последнего успешного запроса
                 self.last_request_ts[user_id] = now
 
-                return answer
+                return {"answer": answer}
 
-            return "Извините, не удалось получить ответ."
+            self.last_request_ts[user_id] = now
+            return {"answer": "Извините, не удалось получить ответ."}
 
         except Exception as e:
             msg = str(e)
             # Обработка превышения лимита токенов/TPM (413 / rate_limit_exceeded)
             if "rate_limit_exceeded" in msg or "Error code: 413" in msg:
-                # Пытаемся сообщить, сколько осталось до следующей попытки
-                last_ts = self.last_request_ts.get(user_id)
                 now_err = time.time()
-                # фиксируем даже неуспешный вызов, чтобы пользователь не спамил
+                last_ts = self.last_request_ts.get(user_id)
                 self.last_request_ts[user_id] = now_err
                 if last_ts is not None:
                     remaining = max(1, int(70 - (now_err - last_ts)))
                 else:
                     remaining = 70
-                return (
-                    f"Превышен лимит токенов/скорости модели (413). "
-                    f"Подождите {remaining} сек и попробуйте задать вопрос короче."
-                )
-            return f"Произошла ошибка при обработке запроса: {msg}"
+                return {
+                    "answer": (
+                        f"Превышен лимит токенов/скорости модели. "
+                        f"Подождите {remaining} сек и попробуйте задать вопрос короче."
+                    )
+                }
+            return {"answer": f"Произошла ошибка при обработке запроса: {msg}"}

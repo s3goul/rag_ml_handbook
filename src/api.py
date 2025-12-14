@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from rag_system import AgenticRAGSystem
+from src.rag_system import AgenticRAGSystem
 
 # Глобальная переменная для хранения RAG системы
 rag_system: Optional[AgenticRAGSystem] = None
@@ -86,7 +86,7 @@ async def query(request: QueryRequest):
             question=request.question,
             user_id=request.user_id or "default"
         )
-        return QueryResponse(answer=answer)
+        return QueryResponse(**answer)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка при обработке запроса: {str(e)}")
 
@@ -94,4 +94,3 @@ async def query(request: QueryRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
