@@ -13,17 +13,17 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="", case_sensitive=True)
 
     telegram_bot_token: str = Field(..., alias="TELEGRAM_BOT_TOKEN")
-    api_url: str = Field(default="http://localhost:8000", alias="API_URL")
+    api_url: str = Field(..., alias="API_URL")
     groq_api_token: str = Field(..., alias="GROQ_API_TOKEN")
     proxy_url: str = Field(..., alias="PROXY_URL")
-    model_name: str = Field(default="qwen/qwen3-32b", alias="MODEL_NAME")
-    embedder_name: str = Field(default="BAAI/bge-m3", alias="EMBEDDER_NAME")
-    huggingfacehub_api_token: Optional[str] = Field(default=None, alias="HUGGINGFACEHUB_API_TOKEN")
+    model_name: str = Field(..., alias="MODEL_NAME")
+    embedder_name: str = Field(..., alias="EMBEDDER_NAME")
+    huggingfacehub_api_token: Optional[str] = Field(..., alias="HUGGINGFACEHUB_API_TOKEN")
 
     # LangSmith настройки
-    langsmith_api_key: Optional[str] = Field(..., alias="LANGSMITH_API_KEY")
-    langsmith_project: str = Field(..., alias="LANGSMITH_PROJECT")
-    langsmith_tracing: str = Field(default="true", alias="LANGSMITH_TRACING")
+    langsmith_api_key: Optional[str] = Field(default=None, alias="LANGSMITH_API_KEY")
+    langsmith_project: Optional[str] = Field(default=None, alias="LANGSMITH_PROJECT")
+    langsmith_tracing: Optional[str] = Field(default=None, alias="LANGSMITH_TRACING")
 
 
 settings = Settings()

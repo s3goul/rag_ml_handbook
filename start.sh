@@ -7,7 +7,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
 # Определяем путь к Python в виртуальном окружении
-PYTHON_BIN="$PROJECT_DIR/.env/bin/python3"
+PYTHON_BIN="$PROJECT_DIR/.venv/bin/python3"
 echo "✅ Используется Python: $PYTHON_BIN"
 
 # Загружаем переменные окружения
@@ -18,13 +18,13 @@ set +a
 
 echo ""
 echo "Запуск FastAPI сервера..."
-$PYTHON_BIN "$PROJECT_DIR/src/api.py" &
+$PYTHON_BIN -m src.api &
 API_PID=$!
 
 sleep 3
 
 echo "Запуск телеграм бота..."
-$PYTHON_BIN "$PROJECT_DIR/src/bot.py" &
+$PYTHON_BIN -m src.bot &
 BOT_PID=$!
 
 echo ""
